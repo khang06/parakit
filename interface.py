@@ -12,7 +12,8 @@ import numpy as np
 import cv2
 import keyboard 
 import struct
-import random  
+import random
+import os
 
 # Step 1 - Find valid game processes & windows
 _game_main_modules = {
@@ -74,8 +75,30 @@ _game_window = valid_game_windows[_valid_game_i]
 _module_name = game_process.info['name']
 game_id = int(_game_main_modules[_module_name][0])
 
+_THREAD_SUSPEND_RESUME = 0x0002
+_THREAD_QUERY_INFORMATION = 0x0040
+_game_thread_id = -1
+min_creation_time = (1 << 64) - 1
+for thread in game_process.threads():
+    thread_handle = ctypes.windll.kernel32.OpenThread(_THREAD_QUERY_INFORMATION | _THREAD_SUSPEND_RESUME, 0, thread.id)
+    if thread_handle == 0:
+        continue
+    creation_time = ctypes.c_uint64()
+    dummy = ctypes.byref(ctypes.c_uint64())
+    if ctypes.windll.kernel32.GetThreadTimes(thread_handle, ctypes.byref(creation_time), dummy, dummy, dummy) == 0:
+        continue
+    if creation_time.value < min_creation_time:
+        _game_thread_id = thread.id
+        min_creation_time = creation_time.value
+if _game_thread_id != -1:
+    game_thread = ctypes.windll.kernel32.OpenThread(_THREAD_QUERY_INFORMATION | _THREAD_SUSPEND_RESUME, 0, _game_thread_id)
+else:
+    print("Interface error: Couldn't find the game thread")
+    exit()
+
 print(f'Found the {_module_name} game process with PID: {game_process.pid}')
 print(f'Found the game window: {_game_window}')
+print(f'Found the game thread: {_game_thread_id}')
 
 
 # Step 3 - Unpack offsets from selected game into namespace
@@ -111,11 +134,16 @@ else:
     exit()
 
 
-# Step 5 - Open the process handle
-_PROCESS_VM_READ = 0x0010
-_PROCESS_QUERY_INFORMATION = 0x0400
-_process_handle = ctypes.windll.kernel32.OpenProcess(_PROCESS_VM_READ | _PROCESS_QUERY_INFORMATION, False, game_process.pid)
+# Step 5 - Open the fast memory reader interface
+fastrpm = ctypes.CDLL(os.path.dirname(os.path.realpath(__file__)) + "/fastrpm_client.dll")
+fastrpm_connect = fastrpm.fastrpm_connect
+fastrpm_connect.restype = ctypes.c_bool
+fastrpm_read = fastrpm.fastrpm_read
+fastrpm_read.restype = ctypes.c_bool
 
+if not fastrpm_connect():
+    print('Interface error: Failed to connect to fast memory reader')
+    exit()
 
 # ==========================================================
 # Game logic groups
@@ -385,13 +413,11 @@ def print_float(offset, rel = False, name = None):
 # Private Method Definitions
 
 _buffers = {} #caching helps!
-_kernel32 = ctypes.windll.kernel32 # minor optimization
-_byref = ctypes.byref(ctypes.c_ulonglong()) # minor optimization
 def _read_memory(address, size, rel):
     if size not in _buffers:
         _buffers[size] = ctypes.create_string_buffer(size)
     buffer = _buffers[size]
-    if not _kernel32.ReadProcessMemory(_process_handle, address if not rel else _base_address + address, buffer, size, _byref):
+    if not fastrpm_read(buffer, address if not rel else _base_address + address, size):
         raise RuntimeError(f"Failed to read memory at address {hex(address if not rel else _base_address + address)} with size {size}.")
     return buffer.raw
 

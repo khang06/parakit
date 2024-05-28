@@ -11,6 +11,8 @@ analyzer, requires_bullets, requires_enemies, requires_items, requires_lasers, r
 exact = seqext_settings['exact']
 need_active = seqext_settings['need_active']
 infinite_print_updates = seqext_settings['infinite_print_updates']
+SuspendThread = ctypes.windll.kernel32.SuspendThread
+ResumeThread = ctypes.windll.kernel32.ResumeThread
 
 def extract_bullets(bullet_manager = zBulletManager):
     bullets = []
@@ -1368,7 +1370,7 @@ def print_game_state(gs: GameState):
 
 def on_exit():
     if game_process.is_running:
-        game_process.resume()
+        ResumeThread(game_thread)
 atexit.register(on_exit)
 
 def parse_frame_count(expr):
@@ -1471,14 +1473,14 @@ else: #State Sequence Extraction
             print(f"[{int(100*frame_counter/frame_count)}%] Extracting from frame #{frame_counter+1} (in-stage: #{frame_timestamp})")
 
         if exact:
-            game_process.suspend()
+            SuspendThread(game_thread)
 
         state = extract_game_state(frame_counter, time.perf_counter() - start_time)
         analysis.step(state)
         frame_counter += 1
 
         if exact:
-            game_process.resume()
+            ResumeThread(game_thread)
 
         #busy wait for new frame
         while True: #(do...while, ensuring term conditions evaluated at least once)
